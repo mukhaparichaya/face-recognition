@@ -1,0 +1,7 @@
+flask
+firebase-admin
+face-recognition
+opencv-python
+numpy
+requests
+gunicorn
