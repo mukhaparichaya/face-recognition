@@ -10,51 +10,59 @@ import requests
 app = Flask(__name__)
 
 # Initialize Firebase Admin SDK
-cred = credentials.Certificate("/home/prankit/Downloads/service.json")  # Ensure this file is in the project folder
+cred = credentials.Certificate("service.json")  # Ensure this file is in your project folder
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-@app.route('/process-image', methods=['POST'])
-def process_image():
+@app.route('/process-images', methods=['POST'])
+def process_images():
     try:
-        # Fetch latest image document from Firestore
-        docs = db.collection("images").limit(1).stream()
-        doc_list = list(docs)
+        # Fetch all users from the "dataset" collection
+        users = db.collection("dataset").stream()
 
-        if not doc_list:
-            return jsonify({"error": "No images found"}), 404
+        for user_doc in users:
+            user_id = user_doc.id  # User ID
+            images_ref = db.collection("dataset").document(user_id).collection("images")
 
-        doc = doc_list[0]
-        doc_id = doc.id
-        data = doc.to_dict()
-        base64_string = data.get("image_base64")
+            # Fetch images from user's "images" subcollection
+            images = images_ref.stream()
 
-        if not base64_string:
-            return jsonify({"error": "Image data missing"}), 400
+            for image_doc in images:
+                image_data = image_doc.to_dict()
+                base64_string = image_data.get("image_base64")
 
-        # Decode Base64 to Image
-        img_data = base64.b64decode(base64_string)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if not base64_string:
+                    continue  # Skip if no image data
 
-        # Convert Image to Face Encoding
-        face_encodings = face_recognition.face_encodings(img)
-        if face_encodings:
-            encoding = face_encodings[0].tolist()  # Convert NumPy array to list
-        else:
-            return jsonify({"error": "No face detected"}), 400
+                # Decode Base64 to Image
+                img_data = base64.b64decode(base64_string)
+                nparr = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        # Send Encoding to Raspberry Pi
-        raspberry_pi_url = "http://100.67.213.11:5000/receive-encoding"  # Replace with actual Pi IP
-        response = requests.post(raspberry_pi_url, json={"encoding": encoding})
+                # Resize image to optimize memory usage
+                scale_percent = 50  # Reduce size to 50%
+                width = int(img.shape[1] * scale_percent / 100)
+                height = int(img.shape[0] * scale_percent / 100)
+                img = cv2.resize(img, (width, height))
 
-        # Delete processed image from Firestore
-        db.collection("images").document(doc_id).delete()
+                # Convert Image to Face Encoding
+                face_encodings = face_recognition.face_encodings(img)
+                if face_encodings:
+                    encoding = face_encodings[0].tolist()
+                else:
+                    continue  # Skip if no face found
 
-        return jsonify({"message": "Processed and sent encoding", "raspberry_response": response.json()})
+                # Send Encoding to Raspberry Pi
+                raspberry_pi_url = "http://100.67.213.11:5000/receive-encoding"  # Replace with actual Pi IP
+                response = requests.post(raspberry_pi_url, json={"user_id": user_id, "encoding": encoding})
+
+                # Delete processed image from Firestore
+                images_ref.document(image_doc.id).delete()
+
+        return jsonify({"message": "All images processed"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)  # Change port if needed
+    app.run(host='0.0.0.0', port=10000)
